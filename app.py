@@ -1,92 +1,80 @@
 import streamlit as st
 import pandas as pd
-import os
 
-# --- 配置与数据存储 ---
-st.set_page_config(page_title="家庭账本", layout="wide")
-DATA_FILE = "expenses.csv"
-MEMBERS = ["爸爸", "妈妈", "我", "妹妹"]
+st.set_page_config(page_title="全能家庭账本", layout="wide")
 
-def load_data():
-    if os.path.exists(DATA_FILE):
-        return pd.read_csv(DATA_FILE)
-    return pd.DataFrame(columns=["日期", "项目", "总金额", "付款人", "参与人"])
+# --- 1. 动态成员管理 ---
+if "members" not in st.session_state:
+    st.session_state.members = ["爸爸", "妈妈", "我"] # 初始默认值
 
-def save_data(df):
-    df.to_csv(DATA_FILE, index=False)
+st.sidebar.title("👥 成员管理")
+new_member = st.sidebar.text_input("添加新成员名字")
+if st.sidebar.button("添加成员"):
+    if new_member and new_member not in st.session_state.members:
+        st.session_state.members.append(new_member)
+        st.rerun()
 
-# --- 页面标题 ---
-st.title("🍎 家庭费用平摊助手")
-st.write("随时随地记录，再也不怕忘账。")
+removed_member = st.sidebar.selectbox("删除成员", ["选择成员"] + st.session_state.members)
+if st.sidebar.button("确认删除"):
+    if removed_member in st.session_state.members:
+        st.session_state.members.remove(removed_member)
+        st.rerun()
 
-# --- 侧边栏：录入新开销 ---
-st.sidebar.header("新增记录")
-with st.sidebar.form("expense_form", clear_on_submit=True):
-    date = st.date_input("日期")
-    item = st.text_input("消费项目", placeholder="例如：晚餐、超市")
-    amount = st.number_input("总金额", min_value=0.0, step=1.0)
-    payer = st.selectbox("谁付的钱？", MEMBERS)
-    participants = st.multiselect("谁参与了平摊？", MEMBERS, default=MEMBERS)
+# --- 2. 消费录入面板 ---
+st.title("💰 灵活费用分摊助手")
+
+with st.expander("📝 录入新消费", expanded=True):
+    col_a, col_b = st.columns(2)
+    with col_a:
+        date = st.date_input("日期")
+        item = st.text_input("消费项目", placeholder="例如：屈臣氏买个人用品")
+        total_amount = st.number_input("总金额", min_value=0.0, step=0.1)
     
-    submitted = st.form_submit_button("确认提交")
-    if submitted and item and amount > 0:
-        df = load_data()
-        new_record = {
-            "日期": date,
-            "项目": item,
-            "总金额": amount,
-            "付款人": payer,
-            "参与人": ",".join(participants)
-        }
-        df = pd.concat([df, pd.DataFrame([new_record])], ignore_index=True)
-        save_data(df)
-        st.sidebar.success("已记录！")
+    with col_b:
+        payer = st.selectbox("谁先付钱？", st.session_state.members)
+        split_mode = st.radio("分摊模式", ["所有人平摊", "指定部分人平摊", "按个人金额（谁买谁付）"])
 
-# --- 主界面：数据展示与结算 ---
-df = load_data()
+    # 核心分摊逻辑处理
+    shares = {}
+    if split_mode == "所有人平摊":
+        st.info(f"模式：每个人分担 {total_amount / len(st.session_state.members):.2f} 元")
+        for m in st.session_state.members:
+            shares[m] = total_amount / len(st.session_state.members)
 
-col1, col2 = st.columns([2, 1])
+    elif split_mode == "指定部分人平摊":
+        selected_p = st.multiselect("哪些人参与平摊？", st.session_state.members)
+        if selected_p:
+            st.info(f"模式：选定人每人分担 {total_amount / len(selected_p):.2f} 元")
+            for m in selected_p:
+                shares[m] = total_amount / len(selected_p)
 
-with col1:
-    st.subheader("📊 消费历史")
-    if not df.empty:
-        st.dataframe(df, use_container_width=True)
-        if st.button("清空所有记录"):
-            if os.path.exists(DATA_FILE): os.remove(DATA_FILE)
-            st.rerun()
-    else:
-        st.info("目前没有记录，请从侧边栏添加。")
-
-with col2:
-    st.subheader("💰 结算方案")
-    if not df.empty:
-        balances = {m: 0.0 for m in MEMBERS}
-        for _, row in df.iterrows():
-            # 付款人增加
-            balances[row["付款人"]] += row["总金额"]
-            # 参与者扣除
-            p_list = row["参与人"].split(",")
-            share = row["总金额"] / len(p_list)
-            for p in p_list:
-                balances[p] -= share
+    elif split_mode == "按个人金额（谁买谁付）":
+        st.write("请输入每个人对应的金额：")
+        temp_sum = 0
+        for m in st.session_state.members:
+            val = st.number_input(f"{m} 的部分", min_value=0.0, key=f"split_{m}")
+            shares[m] = val
+            temp_sum += val
         
-        # 显示欠款逻辑
-        st.write("目前余额状态：")
-        for m, b in balances.items():
-            color = "green" if b >= 0 else "red"
-            st.markdown(f"{m}: :{color}[{b:.2f} 元]")
-        
-        st.divider()
-        st.write("**转账建议：**")
-        # 简单结算算法
-        debtors = [[m, abs(b)] for m, b in balances.items() if b < -0.01]
-        creditors = [[m, b] for m, b in balances.items() if b > 0.01]
-        
-        for d in debtors:
-            for c in creditors:
-                if d[1] <= 0: break
-                if c[1] <= 0: continue
-                settle = min(d[1], c[1])
-                st.info(f"👉 **{d[0]}** 应给 **{c[0]}** : **{settle:.2f}** 元")
-                d[1] -= settle
-                c[1] -= settle
+        if abs(temp_sum - total_amount) > 0.1:
+            st.warning(f"注意：目前各项加起来为 {temp_sum}，与总金额 {total_amount} 不符！")
+
+    if st.button("🚀 提交记录"):
+        if item and total_amount > 0:
+            # 这里构造存入数据库的格式
+            # 为方便计算，我们将参与人及其分摊金额转为字符串存储，或者展开存储
+            new_record = {
+                "日期": str(date),
+                "项目": item,
+                "总金额": total_amount,
+                "付款人": payer,
+                "分摊详情": str(shares) # 存储为字典字符串
+            }
+            # 这里之后对接保存到 Google Sheets 的逻辑
+            st.success("记录成功（逻辑已跑通，待连接数据库）！")
+            st.write("本单分摊情况：", shares)
+
+# --- 3. 统计展示（预览） ---
+st.divider()
+st.subheader("📋 统计预览")
+st.write("当前成员列表：", ", ".join(st.session_state.members))
